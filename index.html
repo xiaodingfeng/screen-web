@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>专业录屏应用</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3f37c9;
+            --success-color: #4cc9f0;
+            --danger-color: #f72585;
+            --warning-color: #f8961e;
+            --dark-color: #1d3557;
+            --light-color: #f8f9fa;
+            --gray-color: #6c757d;
+            --border-radius: 12px;
+            --box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a2a6c, #b21f1f, #1a2a6c);
+            color: #333;
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 100%;
+            height: 100vh;
+            margin: 0;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 5px;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            padding: 15px;
+            backdrop-filter: blur(10px);
+            transition: var(--transition);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .panel:first-child {
+            flex: 1 1 60%; /* Left panel gets 60% by default */
+        }
+        
+        .panel:last-child {
+            flex: 1 1 40%; /* Right panel gets 40% by default */
+        }
+
+        .panel:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .panel-title {
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+            color: var(--dark-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-title i {
+            color: var(--primary-color);
+        }
+
+        @media (min-width: 768px) {
+            .main-content {
+                flex-direction: row;
+            }
+            
+            h1 {
+                font-size: 2rem;
+            }
+            
+            .subtitle {
+                font-size: 1.1rem;
+            }
+        }
+
+        @media (max-width: 767px) {
+            .panel:first-child,
+            .panel:last-child {
+                flex: 1 1 auto; /* On mobile, both panels share space equally */
+            }
+        }
+
+        .settings-container {
+            max-height: 300px;
+            min-height: 150px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: var(--border-radius);
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .setting-group {
+            display: flex;
+            flex-direction: column;
+            min-width: 140px;
+        }
+
+        .setting-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: var(--dark-color);
+            font-size: 0.85rem;
+        }
+
+        .setting-group select, .setting-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            background: white;
+            color: #333;
+        }
+
+        .advanced-toggle {
+            background: none;
+            border: none;
+            color: var(--primary-color);
+            cursor: pointer;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 10px 0;
+            font-size: 0.9rem;
+            width: 100%;
+            text-align: left;
+        }
+
+        .advanced-options {
+            display: none;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+
+        .advanced-options.active {
+            display: block;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .btn {
+            padding: 12px 16px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            flex: 1;
+            min-width: 120px;
+            justify-content: center;
+        }
+
+        @media (min-width: 768px) {
+            .btn {
+                padding: 14px 24px;
+                font-size: 1rem;
+                flex: 0 0 auto;
+            }
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 7px 15px rgba(67, 97, 238, 0.4);
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, var(--warning-color), #e07a00);
+            color: white;
+        }
+
+        .btn-warning:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 7px 15px rgba(248, 150, 30, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger-color), #d11465);
+            color: white;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 7px 15px rgba(247, 37, 133, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, var(--success-color), #38b6ff);
+            color: white;
+        }
+
+        .btn-success:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 7px 15px rgba(76, 201, 240, 0.4);
+        }
+
+        #preview {
+            width: 100%;
+            border-radius: var(--border-radius);
+            background: #000;
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1rem;
+            margin-bottom: 15px;
+            min-height: 200px;  /* Increased to ensure visibility */
+            height: 200px;  /* Fixed height to prevent compression */
+            position: relative;
+            overflow: hidden;
+        }
+
+        #preview video {
+            width: 100%;
+            max-height: 100%;
+            border-radius: var(--border-radius);
+            display: none;
+            object-fit: contain;
+            background: #000;
+        }
+
+        .no-preview {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .no-preview i {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            color: var(--gray-color);
+        }
+
+        @media (min-width: 768px) {
+            .no-preview i {
+                font-size: 3rem;
+            }
+            
+            #preview {
+                font-size: 1.2rem;
+            }
+        }
+
+        .status-bar {
+            padding: 12px;
+            border-radius: var(--border-radius);
+            text-align: center;
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 0.9rem;
+        }
+
+        .recording-info {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 6px;  /* Reduced gap */
+            margin-bottom: 8px;  /* Reduced margin */
+            font-size: 0.8rem;  /* Reduced font size */
+        }
+
+        .info-item {
+            background: rgba(67, 97, 238, 0.1);
+            padding: 5px 8px;  /* Reduced padding */
+            border-radius: 15px;  /* Reduced border radius */
+            display: flex;
+            align-items: center;
+            gap: 3px;  /* Reduced gap */
+        }
+
+        @media (min-width: 768px) {
+            .status-bar {
+                font-size: 1rem;
+            }
+        }
+
+        .status-recording {
+            background: linear-gradient(135deg, #ff9a9e, #fad0c4);
+            color: #d32f2f;
+        }
+
+        .status-paused {
+            background: linear-gradient(135deg, #a1c4fd, #c2e9fb);
+            color: #0d47a1;
+        }
+
+        .status-stopped {
+            background: linear-gradient(135deg, #d4fc79, #96e6a1);
+            color: #2e7d32;
+        }
+
+        .recordings-list {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 5px;
+            min-height: 200px;
+        }
+
+        .recording-item {
+            background: white;
+            border-radius: var(--border-radius);
+            padding: 10px;  /* Reduced padding */
+            margin-bottom: 8px;  /* Reduced margin */
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+            transition: var(--transition);
+            border: 1px solid #eee;
+        }
+
+        .recording-item:hover {
+            transform: translateX(3px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .recording-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;  /* Reduced margin */
+            padding-bottom: 6px;  /* Reduced padding */
+            border-bottom: 1px solid #eee;
+        }
+
+        .recording-title {
+            font-weight: 600;
+            color: var(--dark-color);
+            font-size: 0.9rem;  /* Reduced font size */
+        }
+
+        .recording-date {
+            font-size: 0.75rem;  /* Reduced font size */
+            color: var(--gray-color);
+        }
+
+        .recording-preview {
+            width: 100%;
+            border-radius: 8px;
+            margin-bottom: 8px;  /* Reduced margin */
+            background: #000;
+            max-height: 120px;  /* Reduced height */
+            min-height: 80px;   /* Minimum height */
+            object-fit: contain;
+        }
+
+        .recording-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .action-btn {
+            padding: 4px 8px;  /* Reduced padding */
+            border: none;
+            border-radius: 4px;  /* Reduced border radius */
+            cursor: pointer;
+            font-weight: 500;
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            gap: 3px;  /* Reduced gap */
+            font-size: 0.8rem;  /* Reduced font size */
+        }
+
+        .download-btn {
+            background-color: var(--success-color);
+            color: white;
+        }
+
+        .download-btn:hover {
+            background-color: #38b6ff;
+        }
+
+        .delete-btn {
+            background-color: var(--danger-color);
+            color: white;
+        }
+
+        .delete-btn:hover {
+            background-color: #d11465;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 30px 15px;
+            color: var(--gray-color);
+        }
+
+        .empty-state i {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            opacity: 0.5;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 15px;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.8rem;
+        }
+
+        /* 移动端优化 */
+        @media (max-width: 767px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .controls {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
+            }
+            
+            .recording-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 5px;
+            }
+            
+            .recording-actions {
+                width: 100%;
+                justify-content: space-between;
+            }
+            
+            .action-btn {
+                flex: 1;
+                justify-content: center;
+            }
+            
+            .settings-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* 桌面端优化 */
+        @media (min-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+            
+            .main-content {
+                gap: 20px;
+            }
+            
+            .panel {
+                padding: 20px;
+            }
+        }
+
+        @media (min-width: 1200px) {
+            .container {
+                max-width: 1400px;
+                margin: 0 auto;
+            }
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--primary-color);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--secondary-color);
+        }
+
+        /* 错误信息样式 */
+        .error-info {
+            margin: 10px 0;
+        }
+
+        .error-info h3 {
+            margin-top: 0;
+        }
+
+        .error-info ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+
+        .mobile-warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            color: #856404;
+        }
+
+        .mobile-warning h3 {
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        /* 进度条样式 */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: var(--primary-color);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-video"></i> 专业录屏应用</h1>
+            <p class="subtitle">简单易用的屏幕录制工具</p>
+        </header>
+
+        <div class="main-content">
+            <div class="panel">
+                <h2 class="panel-title"><i class="fas fa-desktop"></i> 录屏控制</h2>
+                
+                <div class="settings-container">
+                    <div class="settings-grid">
+                        <div class="setting-group">
+                            <label for="qualitySelect"><i class="fas fa-hd-video"></i> 清晰度</label>
+                            <select id="qualitySelect">
+                                <option value="low">720p</option>
+                                <option value="medium" selected>1080p</option>
+                                <option value="high">1440p</option>
+                                <option value="ultra">4K</option>
+                            </select>
+                        </div>
+                        
+                        <div class="setting-group">
+                            <label for="frameRateSelect"><i class="fas fa-film"></i> 帧率</label>
+                            <select id="frameRateSelect">
+                                <option value="15">15 FPS</option>
+                                <option value="30" selected>30 FPS</option>
+                                <option value="60">60 FPS</option>
+                            </select>
+                        </div>
+                        
+                        <div class="setting-group">
+                            <label for="audioToggle"><i class="fas fa-volume-up"></i> 系统音频</label>
+                            <select id="audioToggle">
+                                <option value="enabled" selected>开启</option>
+                                <option value="disabled">关闭</option>
+                            </select>
+                        </div>
+                        
+                        <div class="setting-group">
+                            <label for="cameraToggle"><i class="fas fa-camera"></i> 摄像头</label>
+                            <select id="cameraToggle">
+                                <option value="enabled">开启</option>
+                                <option value="disabled" selected>关闭</option>
+                            </select>
+                        </div>
+                        
+                        <div class="setting-group">
+                            <label for="micToggle"><i class="fas fa-microphone"></i> 麦克风</label>
+                            <select id="micToggle">
+                                <option value="enabled">开启</option>
+                                <option value="disabled" selected>关闭</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <button class="advanced-toggle" id="advancedToggle">
+                        <i class="fas fa-chevron-down"></i> 高级设置
+                    </button>
+                    
+                    <div class="advanced-options" id="advancedOptions">
+                        <div class="settings-grid">
+                            <div class="setting-group">
+                                <label for="bitrateSelect"><i class="fas fa-tachometer-alt"></i> 比特率</label>
+                                <select id="bitrateSelect">
+                                    <option value="low">2.5 Mbps</option>
+                                    <option value="medium" selected>5 Mbps</option>
+                                    <option value="high">10 Mbps</option>
+                                    <option value="ultra">20 Mbps</option>
+                                </select>
+                            </div>
+                            
+                            <div class="setting-group">
+                                <label for="durationLimit"><i class="fas fa-clock"></i> 时长(分钟)</label>
+                                <input type="number" id="durationLimit" min="1" max="120" value="120">
+                            </div>
+                            
+                            <div class="setting-group">
+                                <label for="autoSaveInterval"><i class="fas fa-save"></i> 保存间隔</label>
+                                <input type="number" id="autoSaveInterval" min="1" max="10" value="5">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="status-bar status-stopped" id="status">
+                    <i class="fas fa-stop-circle"></i>
+                    <span>录制已停止</span>
+                </div>
+                
+                <div class="recording-info" id="recordingInfo" style="display: none;">
+                    <div class="info-item">
+                        <i class="fas fa-clock"></i>
+                        <span id="recordingTime">00:00:00</span>
+                    </div>
+                    <div class="info-item">
+                        <i class="fas fa-file-video"></i>
+                        <span id="fileSize">0 MB</span>
+                    </div>
+                    <div class="info-item">
+                        <i class="fas fa-microchip"></i>
+                        <span id="memoryUsage">0%</span>
+                    </div>
+                </div>
+                
+                <div class="progress-bar" id="progressBar" style="display: none;">
+                    <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                </div>
+                
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary">
+                        <i class="fas fa-play"></i> 开始录制
+                    </button>
+                    <button id="pauseBtn" class="btn btn-warning" disabled>
+                        <i class="fas fa-pause"></i> 暂停录制
+                    </button>
+                    <button id="stopBtn" class="btn btn-danger" disabled>
+                        <i class="fas fa-stop"></i> 停止录制
+                    </button>
+                    <button id="saveBtn" class="btn btn-success" disabled>
+                        <i class="fas fa-download"></i> 保存到本地
+                    </button>
+                </div>
+                
+                <div id="preview">
+                    <div class="no-preview">
+                        <i class="fas fa-video-slash"></i>
+                        <p>点击"开始录制"按钮开始录屏</p>
+                    </div>
+                    <video autoplay muted></video>
+                    <div id="cameraPreview" style="display: none; position: absolute; bottom: 10px; right: 10px; width: 160px; height: 120px; border-radius: 8px; z-index: 10; border: 2px solid white; background: #000; overflow: hidden; cursor: move;">
+                        <video autoplay muted style="width: 100%; height: 100%; object-fit: cover;"></video>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2 class="panel-title"><i class="fas fa-history"></i> 录屏回放</h2>
+                <div class="recordings-list" id="recordingsContainer">
+                    <div class="empty-state">
+                        <i class="fas fa-inbox"></i>
+                        <p>暂无录制记录</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer>
+            <p>&copy; 2025 专业录屏应用 | 简单易用的屏幕录制工具</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
