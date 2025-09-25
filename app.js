@@ -14,6 +14,7 @@ let fileSize = 0;
 let autoSaveTimer = null;
 let temporaryRecordings = []; // 临时存储录制片段
 let currentRecordingId = null; // 当前录制的唯一标识
+let chunkSizeLimit = 50 * 1024 * 1024; // 50MB before forced save/merge
 
 // 获取DOM元素
 const startBtn = document.getElementById('startBtn');
@@ -117,6 +118,7 @@ async function saveRecordingToDB(recording) {
                 createdAt: new Date(),
                 duration: recording.duration || 0,
                 size: recording.size || 0,
+                mimeType: recording.mimeType || 'video/webm',  // Save the mimeType
                 title: recording.title || `录制 ${recordings.length + 1}`,  // Save the title
                 customTitle: recording.customTitle  // Save if it's a custom title
             });
@@ -243,18 +245,16 @@ async function loadRecordingsFromDB() {
                 for (const record of request.result) {
                     try {
                         let blob;
-                        let mimeType = 'video/webm'; // Default to webm
+                        let mimeType = record.mimeType || 'video/webm'; // Use stored mimeType if available, otherwise default to webm
                         if (record.blobData) {
                             // New format: blob stored as arrayBuffer
-                            // Since we stored as arrayBuffer, we need to determine the original type
-                            // For now, default to webm, but in the future we can enhance to store mimeType
-                            blob = new Blob([record.blobData], { type: 'video/webm' });
+                            blob = new Blob([record.blobData], { type: mimeType });
                         } else if (record.blob) {
                             // Fallback for records stored directly as blobs
                             blob = record.blob;
                         } else {
                             // Fallback for any malformed records
-                            blob = new Blob([], { type: 'video/webm' });
+                            blob = new Blob([], { type: mimeType });
                         }
                         
                         // Create a valid recording object
@@ -535,6 +535,9 @@ function startAutoSaveTimer() {
         if (isRecording && !isPaused && mediaRecorder && mediaRecorder.state === 'recording') {
             // 请求保存当前数据
             mediaRecorder.requestData();
+            
+            // 触发内存优化
+            optimizeMemoryUsage();
         }
     }, interval);
 }
@@ -549,12 +552,18 @@ function stopAutoSaveTimer() {
 
 // 内存优化：定期清理录制数据以防止浏览器卡顿
 function optimizeMemoryUsage() {
-    // 如果录制数据过大，提示用户保存
-    if (fileSize > 500 * 1024 * 1024) { // 500MB
-        const confirmSave = confirm('录制文件已达到500MB，建议保存以释放内存。是否现在保存？');
-        if (confirmSave) {
+    // 如果录制数据超过限制，自动触发数据保存并清空当前缓存
+    if (fileSize > chunkSizeLimit) {
+        console.log(`触发内存优化: 文件大小已达到 ${fileSize / (1024 * 1024)} MB`);
+        
+        // 请求当前数据并保存到IndexedDB
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
             mediaRecorder.requestData();
         }
+        
+        // 清空当前收集的chunks以释放内存
+        recordedChunks = [];
+        fileSize = 0;
     }
     
     // 强制垃圾回收（如果可用）
@@ -650,7 +659,7 @@ async function startRecording() {
                 
                 // Create a canvas to composite screen and camera streams
                 const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
+                const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Optimize for frequent reads
                 
                 const screenVideo = document.createElement('video');
                 screenVideo.srcObject = stream;
@@ -661,6 +670,7 @@ async function startRecording() {
                 cameraVideo.play();
                 
                 // Set canvas dimensions based on screen stream
+                let targetFPS = Math.min(frameRate, 15); // Define targetFPS in outer scope
                 screenVideo.onloadedmetadata = () => {
                     canvas.width = screenVideo.videoWidth;
                     canvas.height = screenVideo.videoHeight;
@@ -671,9 +681,16 @@ async function startRecording() {
                     const previewX = canvas.width - previewWidth - 20; // 20px from right edge
                     const previewY = canvas.height - previewHeight - 20; // 20px from bottom edge
                     
+                    // Optimized drawing function with frame skipping
+                    let lastFrameTime = 0;
+                    const frameInterval = 1000 / targetFPS;
+                    
                     // Draw both video streams to canvas
-                    function draw() {
-                        if (stream.active) { // Check if the stream is still active
+                    function draw(timestamp) {
+                        if (!stream.active) return; // Check if the stream is still active
+                        
+                        // Throttle frame rate to reduce CPU usage
+                        if (timestamp - lastFrameTime >= frameInterval) {
                             ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
                             ctx.drawImage(cameraVideo, previewX, previewY, previewWidth, previewHeight);
                             
@@ -682,16 +699,19 @@ async function startRecording() {
                             ctx.lineWidth = 2;
                             ctx.strokeRect(previewX, previewY, previewWidth, previewHeight);
                             
-                            requestAnimationFrame(draw);
+                            lastFrameTime = timestamp;
                         }
+                        
+                        requestAnimationFrame(draw);
                     }
                     
                     // Start drawing frames
-                    draw();
+                    requestAnimationFrame(draw);
                 };
                 
                 // Create a new stream from the canvas
-                const combinedStream = canvas.captureStream(frameRate);
+                // Use browser's preferred frame rate for capture
+                const combinedStream = canvas.captureStream(targetFPS || frameRate || 30);
                 
                 // Add audio tracks if available
                 const audioTracks = stream.getAudioTracks();
@@ -737,7 +757,11 @@ async function startRecording() {
         // 监听数据可用事件
         mediaRecorder.ondataavailable = async event => {
             if (event.data.size > 0) {
-                recordedChunks.push(event.data);
+                // 只在非合并模式下添加到内存缓存（避免重复存储）
+                if (event.type !== 'dataavailable' || recordedChunks.length === 0) {
+                    recordedChunks.push(event.data);
+                }
+                
                 fileSize += event.data.size;
                 
                 // 保存临时片段到数据库
@@ -754,60 +778,84 @@ async function startRecording() {
 
         // 监听停止事件
         mediaRecorder.onstop = async () => {
-            // Determine the correct MIME type based on what was used for recording
-            const mimeType = mediaRecorder.mimeType || 'video/webm';
-            // 创建录制完成的视频Blob
-            const blob = new Blob(recordedChunks, { type: mimeType });
-            
-            // 计算录制时长
-            const duration = recordingStartTime ? (Date.now() - recordingStartTime) / 1000 : 0;
-            
-            // 保存录制记录
-            const recording = {
-                blob: blob,
-                timestamp: new Date(),
-                duration: duration,
-                size: fileSize,
-                mimeType: mimeType,  // Store the mimeType for later use
-                title: `录制 ${recordings.length + 1}`,  // Default title
-                // Create URL on demand
-                getUrl: function() {
-                    if (!this._url) {
-                        this._url = URL.createObjectURL(this.blob);
-                    }
-                    return this._url;
-                }
-            };
-            
-            // Set the global variable for the save button
-            recordedVideoUrl = recording.getUrl();
-            
             try {
-                // Save to IndexedDB first
-                const recordId = await saveRecordingToDB(recording);
-                // Add the ID to the recording object
-                recording.id = recordId;
+                // 先尝试从临时存储加载所有录制片段
+                let allChunks = [];
                 
-                recordings.push(recording);
+                // 如果内存中还有未保存的chunks，添加它们
+                if (recordedChunks && recordedChunks.length > 0) {
+                    allChunks = [...recordedChunks];
+                }
                 
-                // Update UI after saving
-                updateRecordingsList();
-                updateStatus('录制已停止', 'stopped');
+                // 从IndexedDB加载临时录制片段并合并
+                const tempBlob = await loadAndMergeTempRecordings(currentRecordingId);
                 
-                // 删除临时片段
+                if (tempBlob) {
+                    // 如果有临时片段，将其添加到总chunks中
+                    allChunks.push(tempBlob);
+                }
+                
+                // Determine the correct MIME type based on what was used for recording
+                const mimeType = mediaRecorder.mimeType || 'video/webm';
+                
+                // 创建录制完成的视频Blob
+                const blob = new Blob(allChunks, { type: mimeType });
+                
+                // 计算录制时长
+                const duration = recordingStartTime ? (Date.now() - recordingStartTime) / 1000 : 0;
+                
+                // 保存录制记录
+                const recording = {
+                    blob: blob,
+                    timestamp: new Date(),
+                    duration: duration,
+                    size: fileSize,
+                    mimeType: mimeType,  // Store the mimeType for later use
+                    title: `录制 ${recordings.length + 1}`,  // Default title
+                    // Create URL on demand
+                    getUrl: function() {
+                        if (!this._url) {
+                            this._url = URL.createObjectURL(this.blob);
+                        }
+                        return this._url;
+                    }
+                };
+                
+                // Set the global variable for the save button
+                recordedVideoUrl = recording.getUrl();
+                
                 try {
-                    await deleteTempRecordings(currentRecordingId);
+                    // Save to IndexedDB first
+                    const recordId = await saveRecordingToDB(recording);
+                    // Add the ID to the recording object
+                    recording.id = recordId;
+                    
+                    // 添加新录制到列表的开头
+                    recordings.unshift(recording);
+                    
+                    // Update UI after saving - only add the new recording to the top without full refresh
+                    updateRecordingsList(false); // Pass false to avoid full refresh
+                    
+                    updateStatus('录制已停止', 'stopped');
+                    
+                    // 删除临时片段
+                    try {
+                        await deleteTempRecordings(currentRecordingId);
+                    } catch (error) {
+                        console.error('删除临时录制片段时出错:', error);
+                    }
                 } catch (error) {
-                    console.error('删除临时录制片段时出错:', error);
+                    console.error('保存录制时出错:', error);
+                    updateStatus('录制保存失败: ' + error.message, 'stopped');
                 }
             } catch (error) {
-                console.error('保存录制时出错:', error);
-                updateStatus('录制保存失败: ' + error.message, 'stopped');
+                console.error('停止录制时发生错误:', error);
+                updateStatus('停止录制出错: ' + error.message, 'stopped');
             }
         };
 
         // 开始录制
-        mediaRecorder.start(1000); // 每秒生成一个数据块
+        mediaRecorder.start(5000); // 每5秒生成一个数据块，减少内存压力
         isRecording = true;
         isPaused = false;
 
@@ -997,120 +1045,264 @@ function updateStatus(text, type) {
 }
 
 // 更新录制列表
-function updateRecordingsList() {
-    recordingsContainer.innerHTML = '';
-    
-    if (recordings.length === 0) {
-        recordingsContainer.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-inbox"></i>
-                <p>暂无录制记录</p>
-            </div>
-        `;
-        return;
-    }
-    
-    // 倒序显示（最新的在前面）
-    recordings.slice().reverse().forEach((recording, index) => {
-        const item = document.createElement('div');
-        item.className = 'recording-item';
+function updateRecordingsList(fullRefresh = true) {
+    if (fullRefresh) {
+        // 保存当前滚动位置
+        const scrollPosition = window.scrollY || window.pageYOffset;
         
-        const dateStr = recording.timestamp.toLocaleString('zh-CN');
-        // Ensure duration is properly formatted (convert to seconds if needed)
-        const durationStr = recording.duration ? formatTime(recording.duration) : '00:00:00';
-        const sizeStr = `${(recording.size / (1024 * 1024)).toFixed(2)} MB`;
+        recordingsContainer.innerHTML = '';
         
-        // 设置视频源 first to get duration
-        const video = document.createElement('video');
-        video.src = recording.getUrl();
-        video.controls = true;
-        video.className = 'recording-preview';
-        
-        // Wait for metadata to load to get the actual duration
-        const updateDuration = () => {
-            const actualDurationStr = video.duration && video.duration !== Infinity ? 
-                                     formatTime(video.duration) : durationStr;
-            
-            // Create title element with rename functionality
-            const recordingTitle = document.createElement('div');
-            recordingTitle.className = 'recording-title';
-            recordingTitle.textContent = recording.title || recording.customTitle || `录制 ${recordings.length - index}`;
-            recordingTitle.contentEditable = true;
-            recordingTitle.title = "点击编辑标题";
-            
-            // Add event to save title when it changes
-            recordingTitle.addEventListener('blur', function() {
-                recording.title = this.textContent;
-                recording.customTitle = this.textContent;
-                saveRecordingTitle(recording);
-            });
-            
-            recordingTitle.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    this.blur(); // Save on Enter
-                }
-            });
-            
-            item.innerHTML = `
-                <div class="recording-header">
-                    <div class="recording-title" contenteditable="true" title="点击编辑标题">${recording.title || recording.customTitle || `录制 ${recordings.length - index}`}</div>
-                    <div class="recording-date">${dateStr}</div>
-                </div>
-                <div style="font-size: 0.85rem; color: #666; margin-bottom: 10px;">
-                    <span style="margin-right: 15px;"><i class="fas fa-clock"></i> ${actualDurationStr}</span>
-                    <span><i class="fas fa-file-video"></i> ${sizeStr}</span>
+        if (recordings.length === 0) {
+            recordingsContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-inbox"></i>
+                    <p>暂无录制记录</p>
                 </div>
             `;
-            
-            // Add the event listeners to the title element
-            const titleElement = item.querySelector('.recording-title');
-            titleElement.addEventListener('blur', function() {
-                recording.title = this.textContent;
-                recording.customTitle = this.textContent;
-                saveRecordingTitle(recording);
-            });
-            
-            titleElement.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    this.blur(); // Save on Enter
-                }
-            });
-            
-            item.appendChild(video);
-            
-            item.innerHTML += `
-                <div class="recording-actions">
-                    <button class="action-btn download-btn" onclick="downloadRecording(${recordings.length - 1 - index})">
-                        <i class="fas fa-download"></i> 下载
-                    </button>
-                    <button class="action-btn delete-btn" onclick="deleteRecording(${recordings.length - 1 - index})">
-                        <i class="fas fa-trash"></i> 删除
-                    </button>
-                </div>
-            `;
-        };
-        
-        if (video.readyState >= 1) { // Metadata already loaded
-            updateDuration();
-        } else {
-            video.addEventListener('loadedmetadata', updateDuration);
+            // 恢复滚动位置
+            window.scrollTo(0, scrollPosition);
+            return;
         }
         
-        recordingsContainer.appendChild(item);
-    });
+        // 高效更新：只显示最新的10个录制，其他可以通过滚动加载
+        const maxDisplay = 10;
+        // 倒序显示（最新的在前面）
+        const recordingsToShow = recordings.slice().reverse().slice(0, maxDisplay);
+        
+        recordingsToShow.forEach((recording, index) => {
+            const item = createRecordingItem(recording, index, recordings.length - 1 - index);
+            recordingsContainer.appendChild(item);
+        });
+        
+        // 如果还有更多录制，显示加载更多按钮
+        if (recordings.length > maxDisplay) {
+            const loadMoreBtn = document.createElement('button');
+            loadMoreBtn.className = 'btn btn-primary';
+            loadMoreBtn.style.margin = '10px auto';
+            loadMoreBtn.style.display = 'block';
+            loadMoreBtn.innerHTML = `<i class="fas fa-plus"></i> 显示更多录制 (${recordings.length - maxDisplay} 个隐藏)`;
+            
+            const allRecordings = recordings.slice().reverse(); // 完整的倒序列表
+            const hiddenRecordings = allRecordings.slice(maxDisplay); // 隐藏的部分
+            
+            // 创建一个标志来跟踪是否已经加载了更多
+            let moreLoaded = false;
+            
+            loadMoreBtn.onclick = () => {
+                if (!moreLoaded) {
+                    // 添加隐藏的录制到当前列表
+                    hiddenRecordings.forEach((recording, hiddenIndex) => {
+                        const globalIndex = maxDisplay + hiddenIndex;
+                        const item = createRecordingItem(recording, globalIndex, recordings.length - 1 - globalIndex);
+                        recordingsContainer.appendChild(item);
+                    });
+                    
+                    // 隐藏加载更多按钮
+                    loadMoreBtn.style.display = 'none';
+                    moreLoaded = true;
+                }
+            };
+            
+            recordingsContainer.appendChild(loadMoreBtn);
+        }
+        
+        // 恢复滚动位置
+        window.scrollTo(0, scrollPosition);
+    } else {
+        // Partial update: only add the new recording to the top
+        if (recordings.length > 0) {
+            // Get the newest recording (first in the array since we used unshift)
+            const newRecording = recordings[0];
+            
+            const item = createRecordingItem(newRecording, 0, 0, true); // Pass true to indicate it's the newest
+            
+            // Insert the new item at the beginning of the container
+            if (recordingsContainer.firstChild && recordingsContainer.firstChild.className === 'empty-state') {
+                // If it's an empty state, replace it completely
+                recordingsContainer.innerHTML = '';
+                recordingsContainer.appendChild(item);
+            } else {
+                // Otherwise, insert at the beginning
+                recordingsContainer.insertBefore(item, recordingsContainer.firstChild);
+            }
+        }
+    }
+}
+
+// 创建录制项目元素的辅助函数
+function createRecordingItem(recording, displayIndex, arrayIndex, isNewest = false) {
+    const item = document.createElement('div');
+    item.className = 'recording-item';
+    
+    const dateStr = recording.timestamp.toLocaleString('zh-CN');
+    const durationStr = recording.duration ? formatTime(recording.duration) : '00:00:00';
+    const sizeStr = `${(recording.size / (1024 * 1024)).toFixed(2)} MB`;
+    
+    // 设置视频源 first to get duration
+    const video = document.createElement('video');
+    video.src = recording.getUrl();
+    video.controls = true;
+    video.className = 'recording-preview';
+    
+    // Wait for metadata to load to get the actual duration
+    const updateDuration = () => {
+        const actualDurationStr = video.duration && video.duration !== Infinity ? 
+                                 formatTime(video.duration) : durationStr;
+        
+        // Create header div
+        const headerDiv = document.createElement('div');
+        headerDiv.className = 'recording-header';
+        
+        // Create title element
+        const recordingTitleElement = document.createElement('div');
+        recordingTitleElement.className = 'recording-title';
+        recordingTitleElement.contentEditable = true;
+        recordingTitleElement.title = "点击编辑标题";
+        recordingTitleElement.textContent = recording.title || recording.customTitle || `录制 ${recordings.length - displayIndex}`;
+        
+        // Add event listeners to title
+        recordingTitleElement.addEventListener('blur', function() {
+            recording.title = this.textContent;
+            recording.customTitle = this.textContent;
+            if (typeof saveRecordingTitle === 'function') {
+                saveRecordingTitle(recording);
+            }
+        });
+        
+        recordingTitleElement.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.blur(); // Save on Enter
+            }
+        });
+        
+        // Create date element
+        const dateElement = document.createElement('div');
+        dateElement.className = 'recording-date';
+        dateElement.textContent = dateStr;
+        
+        // Add elements to header
+        headerDiv.appendChild(recordingTitleElement);
+        headerDiv.appendChild(dateElement);
+        
+        // Create info div
+        const infoDiv = document.createElement('div');
+        infoDiv.style.cssText = 'font-size: 0.85rem; color: #666; margin-bottom: 10px;';
+        
+        // Add duration and size info
+        const durationSpan = document.createElement('span');
+        durationSpan.style.marginRight = '15px';
+        durationSpan.innerHTML = `<i class="fas fa-clock"></i> ${actualDurationStr}`;
+        
+        const sizeSpan = document.createElement('span');
+        sizeSpan.innerHTML = `<i class="fas fa-file-video"></i> ${sizeStr}`;
+        
+        infoDiv.appendChild(durationSpan);
+        infoDiv.appendChild(sizeSpan);
+        
+        // Add header and info to item
+        item.appendChild(headerDiv);
+        item.appendChild(infoDiv);
+        
+        // 对于第一个录制（最新的）或在部分更新中的新录制，默认显示预览；对于其他录制，需要点击展开
+        if (displayIndex === 0 || isNewest) {
+            // 第一个录制或最新录制默认显示预览
+            item.appendChild(video);
+            // 添加隐藏预览的选项
+            const previewToggle = document.createElement('div');
+            previewToggle.className = 'preview-toggle';
+            previewToggle.innerHTML = '<i class="fas fa-compress"></i> 隐藏预览';
+            
+            let previewVisible = true;
+            previewToggle.addEventListener('click', () => {
+                if (previewVisible) {
+                    video.style.display = 'none';
+                    previewToggle.innerHTML = '<i class="fas fa-expand"></i> 显示预览';
+                    previewVisible = false;
+                } else {
+                    video.style.display = 'block';
+                    previewToggle.innerHTML = '<i class="fas fa-compress"></i> 隐藏预览';
+                    previewVisible = true;
+                }
+            });
+            
+            item.appendChild(previewToggle);
+        } else {
+            // 其他录制默认不显示预览，需要点击展开
+            const previewToggle = document.createElement('div');
+            previewToggle.className = 'preview-toggle';
+            previewToggle.innerHTML = '<i class="fas fa-expand"></i> 显示预览';
+            
+            let previewVisible = false;
+            previewToggle.addEventListener('click', () => {
+                if (!previewVisible) {
+                    item.appendChild(video);
+                    video.style.display = 'block';
+                    previewToggle.innerHTML = '<i class="fas fa-compress"></i> 隐藏预览';
+                    previewVisible = true;
+                } else {
+                    video.style.display = 'none';
+                    // 从DOM中移除视频元素以节省内存
+                    if (video.parentNode) {
+                        item.removeChild(video);
+                    }
+                    previewToggle.innerHTML = '<i class="fas fa-expand"></i> 显示预览';
+                    previewVisible = false;
+                }
+            });
+            
+            item.appendChild(previewToggle);
+        }
+        
+        // Create action buttons
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'recording-actions';
+        
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'action-btn download-btn';
+        downloadBtn.innerHTML = '<i class="fas fa-download"></i> 下载';
+        downloadBtn.onclick = () => downloadRecording(arrayIndex);
+        
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'action-btn delete-btn';
+        deleteBtn.innerHTML = '<i class="fas fa-trash"></i> 删除';
+        deleteBtn.onclick = () => deleteRecording(arrayIndex);
+        
+        actionsDiv.appendChild(downloadBtn);
+        actionsDiv.appendChild(deleteBtn);
+        
+        item.appendChild(actionsDiv);
+    };
+    
+    if (video.readyState >= 1) { // Metadata already loaded
+        updateDuration();
+    } else {
+        video.addEventListener('loadedmetadata', updateDuration);
+    }
+    
+    return item;
 }
 
 // 下载指定录制
 function downloadRecording(index) {
-    const recording = recordings[index];
-    if (!recording) return;
+    // Since recordings are in reverse order in the UI compared to the array, 
+    // we need to calculate the actual index in the recordings array
+    const actualIndex = recordings.length - 1 - index;
     
-    // For now, just download with the appropriate extension based on mimeType
+    if (actualIndex < 0 || actualIndex >= recordings.length) return;
+    
+    const recording = recordings[actualIndex];
+    
+    // Check if recording has a valid blob and timestamp
+    if (!recording || !recording.timestamp) {
+        alert('没有找到要下载的录制文件');
+        return;
+    }
+    
+    // Use the same download approach as in the saveRecording function
     const extension = recording.mimeType && recording.mimeType.includes('mp4') ? 'mp4' : 'webm';
     const title = recording.title ? recording.title.replace(/[<>:"/\\|?*]/g, '_') : 'recording'; // Sanitize title
-    
+
     const a = document.createElement('a');
     a.href = recording.getUrl();
     a.download = `${title}-${recording.timestamp.toISOString().slice(0, 19).replace(/:/g, '-')}.${extension}`;
@@ -1119,11 +1311,18 @@ function downloadRecording(index) {
     document.body.removeChild(a);
 }
 
+// Make the function globally accessible
+window.downloadRecording = downloadRecording;
+
 // 删除指定录制
 async function deleteRecording(index) {
-    if (index < 0 || index >= recordings.length) return;
+    // Since recordings are in reverse order in the UI compared to the array, 
+    // we need to calculate the actual index in the recordings array
+    const actualIndex = recordings.length - 1 - index;
     
-    const recording = recordings[index];
+    if (actualIndex < 0 || actualIndex >= recordings.length) return;
+    
+    const recording = recordings[actualIndex];
     
     // 释放URL对象 if it exists
     if (recording._url) {
@@ -1141,11 +1340,20 @@ async function deleteRecording(index) {
     }
     
     // 从数组中移除
-    recordings.splice(index, 1);
+    recordings.splice(actualIndex, 1);
     
-    // 更新列表
+    // 更新列表 - need full refresh after deletion to maintain proper ordering
     updateRecordingsList();
 }
+
+// 全局访问的删除函数
+window.deleteRecording = deleteRecording;
+
+// 全局访问的保存录制标题函数
+window.saveRecordingTitle = saveRecordingTitle;
+
+// 全局访问的创建录制项目函数
+window.createRecordingItem = createRecordingItem;
 
 // Page load initialization
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1176,6 +1384,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (error) {
         console.warn('检查临时录制数据时出错:', error);
     }
+    
+    // 初始化性能监控
+    initPerformanceMonitoring();
 });
 
 // Save updated recording title to database
@@ -1241,6 +1452,63 @@ async function clearTempRecordings() {
     }
 }
 
+// 检查和报告内存使用情况
+function checkMemoryUsage() {
+    if (performance.memory) {
+        const memoryInfo = {
+            used: Math.round(performance.memory.usedJSHeapSize / 1048576 * 100) / 100, // MB
+            total: Math.round(performance.memory.totalJSHeapSize / 1048576 * 100) / 100, // MB
+            limit: Math.round(performance.memory.jsHeapSizeLimit / 1048576 * 100) / 100 // MB
+        };
+        
+        console.log(`内存使用情况: ${memoryInfo.used}MB / ${memoryInfo.limit}MB`);
+        return memoryInfo;
+    }
+    return null;
+}
+
+// 定期清理过期的临时记录
+function scheduleTempRecordCleanup() {
+    // 每小时清理一次超过24小时的临时记录
+    setInterval(async () => {
+        try {
+            const db = await openDB();
+            const transaction = db.transaction(TEMP_STORE_NAME, 'readwrite');
+            const store = transaction.objectStore(TEMP_STORE_NAME);
+            
+            // 获取所有临时记录
+            const request = store.getAll();
+            
+            request.onsuccess = () => {
+                const records = request.result;
+                const now = Date.now();
+                const oneDayAgo = now - (24 * 60 * 60 * 1000); // 24小时前
+                
+                records.forEach(record => {
+                    if (record.timestamp && record.timestamp < oneDayAgo) {
+                        // 删除超过24小时的临时记录
+                        store.delete(record.id);
+                        console.log(`删除过期临时记录: ${record.id}`);
+                    }
+                });
+            };
+        } catch (error) {
+            console.warn('清理过期临时记录时出错:', error);
+        }
+    }, 60 * 60 * 1000); // 每小时运行一次
+}
+
+// 初始化性能监控
+function initPerformanceMonitoring() {
+    // 定期检查内存使用情况
+    setInterval(() => {
+        checkMemoryUsage();
+    }, 30000); // 每30秒检查一次
+    
+    // 启动临时文件清理调度
+    scheduleTempRecordCleanup();
+}
+
 // 窗口大小调整时优化布局
 window.addEventListener('resize', () => {
     // 确保视频元素正确显示
@@ -1264,6 +1532,16 @@ window.addEventListener('beforeunload', (event) => {
     }
 });
 
+// 页面隐藏时也触发数据保存（例如切换标签页或最小化窗口）
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && isRecording) {
+        // 请求保存当前数据
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.requestData();
+        }
+    }
+});
+
 // Convert video to GIF and download
 function convertToGifAndDownload(videoUrl) {
     alert('GIF转换需要外部工具支持。当前录制文件将以WebM格式下载，您可以在后期使用视频转换工具将其转换为GIF格式。');
@@ -1276,6 +1554,8 @@ function convertToGifAndDownload(videoUrl) {
     a.click();
     document.body.removeChild(a);
 }
+
+
 
 // Make an element draggable
 function makeDraggable(element) {
